@@ -5,22 +5,28 @@ import os from "node:os";
 const CONFIG_DIR = path.join(os.homedir(), ".pathfinder");
 const CONFIG_FILE = path.join(CONFIG_DIR, "config.json");
 
-interface Config {
+export type ServiceName = "kakao" | "odsay";
+
+interface ServiceConfig {
   apiKey: string;
+}
+
+interface Config {
+  kakao?: ServiceConfig;
+  odsay?: ServiceConfig;
 }
 
 export function getConfigPath(): string {
   return CONFIG_FILE;
 }
 
-export function loadConfig(): Config | null {
+export function loadConfig(): Config {
   try {
-    if (!fs.existsSync(CONFIG_FILE)) return null;
+    if (!fs.existsSync(CONFIG_FILE)) return {};
     const raw = fs.readFileSync(CONFIG_FILE, "utf-8");
-    const config = JSON.parse(raw) as Config;
-    return config.apiKey ? config : null;
+    return JSON.parse(raw) as Config;
   } catch {
-    return null;
+    return {};
   }
 }
 
@@ -31,12 +37,20 @@ export function saveConfig(config: Config): void {
   fs.writeFileSync(CONFIG_FILE, JSON.stringify(config, null, 2), "utf-8");
 }
 
-export function getApiKey(): string {
+export function getApiKey(service: ServiceName): string {
   const config = loadConfig();
-  if (!config) {
+  const svc = config[service];
+  if (!svc?.apiKey) {
+    const label = service === "kakao" ? "카카오" : "ODsay";
     throw new Error(
-      "API 키가 설정되지 않았습니다. `pathfinder login` 명령으로 먼저 설정해주세요."
+      `${label} API 키가 설정되지 않았습니다. \`pathfinder login ${service}\` 명령으로 먼저 설정해주세요.`
     );
   }
-  return config.apiKey;
+  return svc.apiKey;
+}
+
+export function deleteServiceConfig(service: ServiceName): void {
+  const config = loadConfig();
+  delete config[service];
+  saveConfig(config);
 }

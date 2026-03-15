@@ -1,7 +1,7 @@
 {
-  "name": "pathfinder-cli",
+  "name": "@unlimiting/pathfinder",
   "version": "0.1.0",
-  "description": "CLI tool for Kakao Mobility Navigation API",
+  "description": "한국 길찾기 CLI (자동차 + 대중교통)",
   "type": "module",
   "bin": {
     "pathfinder": "./dist/index.js"
@@ -11,6 +11,12 @@
     "dev": "tsx src/index.ts",
     "typecheck": "tsc --noEmit"
   },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/unlimiting-studio/pathfinder.git"
+  },
+  "license": "MIT",
+  "files": ["dist"],
   "devDependencies": {
     "@types/node": "^22.0.0",
     "tsup": "^8.0.0",

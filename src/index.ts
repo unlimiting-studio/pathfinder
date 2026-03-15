@@ -4,37 +4,69 @@ import { Command } from "commander";
 import inquirer from "inquirer";
 import chalk from "chalk";
 import ora from "ora";
-import { loadConfig, saveConfig, getApiKey, getConfigPath } from "./config.js";
+import {
+  loadConfig,
+  saveConfig,
+  getApiKey,
+  getConfigPath,
+  deleteServiceConfig,
+  type ServiceName,
+} from "./config.js";
 import {
   directions,
   futureDirections,
   waypointsDirections,
   type RouteOptions,
 } from "./api.js";
-import { printDirectionsResponse } from "./format.js";
+import { printDirectionsResponse, printTransitResponse } from "./format.js";
 import { resolveLocation, resolveWaypoints } from "./geocode.js";
+import { searchTransitPath } from "./odsay-api.js";
 
 const program = new Command();
 
 program
   .name("pathfinder")
-  .description("카카오 모빌리티 길찾기 API CLI 도구")
-  .version("0.1.0");
+  .description("한국 길찾기 CLI (자동차 + 대중교통)")
+  .version("0.2.0");
 
 // ── login ──────────────────────────────────────────────────────────
 program
   .command("login")
-  .description("카카오 REST API 키를 등록합니다")
+  .argument("[service]", "서비스 선택 (kakao 또는 odsay)")
+  .description("API 키를 등록합니다 (kakao 또는 odsay)")
   .option("-k, --key <key>", "API 키를 직접 지정")
-  .action(async (opts) => {
+  .action(async (service: string | undefined, opts) => {
+    let svc = service as ServiceName | undefined;
+
+    if (!svc) {
+      const answers = await inquirer.prompt([
+        {
+          type: "list",
+          name: "service",
+          message: "어떤 서비스의 API 키를 등록하시겠습니까?",
+          choices: [
+            { name: "카카오 (자동차 길찾기, 주소 검색)", value: "kakao" },
+            { name: "ODsay (대중교통 길찾기)", value: "odsay" },
+          ],
+        },
+      ]);
+      svc = answers.service as ServiceName;
+    }
+
+    if (svc !== "kakao" && svc !== "odsay") {
+      console.log(chalk.red("❌ 서비스는 kakao 또는 odsay만 가능합니다."));
+      process.exit(1);
+    }
+
     let apiKey = opts.key as string | undefined;
+    const label = svc === "kakao" ? "카카오 REST API" : "ODsay API";
 
     if (!apiKey) {
       const answers = await inquirer.prompt([
         {
           type: "password",
           name: "apiKey",
-          message: "카카오 REST API 키를 입력하세요:",
+          message: `${label} 키를 입력하세요:`,
           mask: "*",
           validate: (v: string) =>
             v.trim().length > 0 || "API 키를 입력해주세요.",
@@ -43,8 +75,10 @@ program
       apiKey = answers.apiKey as string;
     }
 
-    saveConfig({ apiKey: apiKey!.trim() });
-    console.log(chalk.green("✅ API 키가 저장되었습니다."));
+    const config = loadConfig();
+    config[svc] = { apiKey: apiKey!.trim() };
+    saveConfig(config);
+    console.log(chalk.green(`✅ ${label} 키가 저장되었습니다.`));
     console.log(chalk.dim(`   설정 파일: ${getConfigPath()}`));
   });
 
@@ -54,45 +88,72 @@ program
   .description("현재 로그인 상태를 확인합니다")
   .action(() => {
     const config = loadConfig();
-    if (config) {
-      const masked =
-        config.apiKey.slice(0, 4) + "..." + config.apiKey.slice(-4);
-      console.log(chalk.green(`✅ 로그인됨 (키: ${masked})`));
-      console.log(chalk.dim(`   설정 파일: ${getConfigPath()}`));
+    console.log(chalk.bold("\n📋 Pathfinder 로그인 상태\n"));
+
+    if (config.kakao?.apiKey) {
+      const k = config.kakao.apiKey;
+      const masked = k.slice(0, 4) + "..." + k.slice(-4);
+      console.log(chalk.green(`  ✅ 카카오: 로그인됨 (키: ${masked})`));
     } else {
-      console.log(
-        chalk.yellow("❌ 로그인되지 않음. `pathfinder login`으로 설정하세요.")
-      );
+      console.log(chalk.yellow("  ❌ 카카오: 미등록 → pathfinder login kakao"));
     }
+
+    if (config.odsay?.apiKey) {
+      const k = config.odsay.apiKey;
+      const masked = k.slice(0, 4) + "..." + k.slice(-4);
+      console.log(chalk.green(`  ✅ ODsay: 로그인됨 (키: ${masked})`));
+    } else {
+      console.log(chalk.yellow("  ❌ ODsay: 미등록 → pathfinder login odsay"));
+    }
+
+    console.log(chalk.dim(`\n   설정 파일: ${getConfigPath()}`));
+    console.log();
   });
 
 // ── logout ─────────────────────────────────────────────────────────
 program
   .command("logout")
+  .argument("[service]", "서비스 선택 (kakao, odsay 또는 생략 시 전체)")
   .description("저장된 API 키를 삭제합니다")
-  .action(async () => {
+  .action(async (service: string | undefined) => {
     const config = loadConfig();
-    if (!config) {
+    if (!config.kakao && !config.odsay) {
       console.log(chalk.yellow("이미 로그아웃 상태입니다."));
       return;
     }
+
+    if (service && service !== "kakao" && service !== "odsay") {
+      console.log(chalk.red("❌ 서비스는 kakao 또는 odsay만 가능합니다."));
+      process.exit(1);
+    }
+
+    const target = service
+      ? service === "kakao"
+        ? "카카오"
+        : "ODsay"
+      : "모든 서비스";
 
     const { confirm } = await inquirer.prompt([
       {
         type: "confirm",
         name: "confirm",
-        message: "저장된 API 키를 삭제하시겠습니까?",
+        message: `${target}의 API 키를 삭제하시겠습니까?`,
         default: false,
       },
     ]);
 
     if (confirm) {
-      const fs = await import("node:fs");
-      try {
-        fs.unlinkSync(getConfigPath());
-        console.log(chalk.green("✅ API 키가 삭제되었습니다."));
-      } catch {
-        console.log(chalk.red("삭제에 실패했습니다."));
+      if (service) {
+        deleteServiceConfig(service as ServiceName);
+        console.log(chalk.green(`✅ ${target} API 키가 삭제되었습니다.`));
+      } else {
+        const fs = await import("node:fs");
+        try {
+          fs.unlinkSync(getConfigPath());
+          console.log(chalk.green("✅ 모든 API 키가 삭제되었습니다."));
+        } catch {
+          console.log(chalk.red("삭제에 실패했습니다."));
+        }
       }
     }
   });
@@ -151,7 +212,7 @@ addRouteOptions(
       "경유지 (|로 구분, 최대 5개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
-  const apiKey = getApiKey();
+  const apiKey = getApiKey("kakao");
 
   console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
   const origin = await resolveLocation(apiKey, opts.origin as string);
@@ -193,7 +254,7 @@ addRouteOptions(
       "경유지 (|로 구분, 최대 30개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
-  const apiKey = getApiKey();
+  const apiKey = getApiKey("kakao");
 
   console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
   const origin = await resolveLocation(apiKey, opts.origin as string);
@@ -243,7 +304,7 @@ addRouteOptions(
       "경유지 (|로 구분, 최대 5개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
-  const apiKey = getApiKey();
+  const apiKey = getApiKey("kakao");
   const departureTime = opts.time as string;
 
   if (!/^\d{12}$/.test(departureTime)) {
@@ -279,20 +340,96 @@ addRouteOptions(
   }
 });
 
+// ── transit ────────────────────────────────────────────────────────
+program
+  .command("transit")
+  .alias("pt")
+  .description("대중교통 길찾기 (출발지 → 도착지)")
+  .requiredOption(
+    "-o, --origin <location>",
+    "출발지 (주소, 장소명, 또는 경도,위도)"
+  )
+  .requiredOption("-d, --dest <location>", "도착지 (주소, 장소명, 또는 경도,위도)")
+  .option(
+    "-m, --mode <mode>",
+    "교통수단 (all|subway|bus)",
+    "all"
+  )
+  .option(
+    "--opt <opt>",
+    "정렬 기준 (0=추천, 1=최소환승, 2=최소도보, 3=무환승)",
+    "0"
+  )
+  .option("--json", "JSON 원본 출력")
+  .action(async (opts) => {
+    const kakaoKey = getApiKey("kakao");
+    const odsayKey = getApiKey("odsay");
+
+    console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
+    const origin = await resolveLocation(kakaoKey, opts.origin as string);
+    const destination = await resolveLocation(kakaoKey, opts.dest as string);
+
+    const modeMap: Record<string, number> = { all: 0, subway: 1, bus: 2 };
+    const searchPathType = modeMap[opts.mode as string] ?? 0;
+
+    const spinner = ora("대중교통 경로를 검색하고 있습니다...").start();
+    try {
+      const res = await searchTransitPath(odsayKey, {
+        origin: { x: origin.x, y: origin.y },
+        destination: { x: destination.x, y: destination.y },
+        searchPathType,
+        OPT: parseInt(opts.opt as string, 10),
+      });
+      spinner.stop();
+      printTransitResponse(res, !!opts.json);
+    } catch (e) {
+      spinner.fail((e as Error).message);
+      process.exit(1);
+    }
+  });
+
 // ── Ensure login before API commands ───────────────────────────────
 program.hook("preAction", (_thisCommand, actionCommand) => {
   const name = actionCommand.name();
   if (["login", "status", "logout"].includes(name)) return;
 
+  // transit needs both kakao (geocoding) and odsay
+  if (name === "transit") {
+    try {
+      getApiKey("kakao");
+    } catch {
+      console.log(
+        chalk.yellow(
+          "⚠️  카카오 API 키가 설정되지 않았습니다 (주소 검색에 필요). 먼저 로그인해주세요:\n"
+        )
+      );
+      console.log(chalk.cyan("  pathfinder login kakao\n"));
+      process.exit(1);
+    }
+    try {
+      getApiKey("odsay");
+    } catch {
+      console.log(
+        chalk.yellow(
+          "⚠️  ODsay API 키가 설정되지 않았습니다. 먼저 로그인해주세요:\n"
+        )
+      );
+      console.log(chalk.cyan("  pathfinder login odsay\n"));
+      process.exit(1);
+    }
+    return;
+  }
+
+  // car commands need kakao
   try {
-    getApiKey();
+    getApiKey("kakao");
   } catch {
     console.log(
       chalk.yellow(
-        "⚠️  API 키가 설정되지 않았습니다. 먼저 로그인해주세요:\n"
+        "⚠️  카카오 API 키가 설정되지 않았습니다. 먼저 로그인해주세요:\n"
       )
     );
-    console.log(chalk.cyan("  pathfinder login\n"));
+    console.log(chalk.cyan("  pathfinder login kakao\n"));
     process.exit(1);
   }
 });
