@@ -9,10 +9,10 @@ import {
   directions,
   futureDirections,
   waypointsDirections,
-  type Coordinate,
   type RouteOptions,
 } from "./api.js";
 import { printDirectionsResponse } from "./format.js";
+import { resolveLocation, resolveWaypoints } from "./geocode.js";
 
 const program = new Command();
 
@@ -98,32 +98,6 @@ program
   });
 
 // ── Shared option helpers ──────────────────────────────────────────
-function parseCoord(raw: string): Coordinate {
-  const parts = raw.split(",");
-  if (parts.length < 2) {
-    throw new Error(
-      `좌표 형식이 올바르지 않습니다: "${raw}" (예: 127.123,37.456 또는 127.123,37.456,name=서울역)`
-    );
-  }
-  const x = parseFloat(parts[0]);
-  const y = parseFloat(parts[1]);
-  if (isNaN(x) || isNaN(y)) {
-    throw new Error(`좌표를 숫자로 변환할 수 없습니다: "${raw}"`);
-  }
-
-  const coord: Coordinate = { x, y };
-  for (let i = 2; i < parts.length; i++) {
-    const [k, v] = parts[i].split("=");
-    if (k === "name") coord.name = v;
-    if (k === "angle") coord.angle = parseInt(v, 10);
-  }
-  return coord;
-}
-
-function parseWaypoints(raw: string): Coordinate[] {
-  return raw.split("|").map(parseCoord);
-}
-
 function addRouteOptions(cmd: Command): Command {
   return cmd
     .option(
@@ -168,20 +142,22 @@ addRouteOptions(
     .alias("dir")
     .description("자동차 길찾기 (출발지 → 도착지, 최대 5개 경유지)")
     .requiredOption(
-      "-o, --origin <coord>",
-      "출발지 (경도,위도[,name=이름][,angle=각도])"
+      "-o, --origin <location>",
+      "출발지 (주소, 장소명, 또는 경도,위도)"
     )
-    .requiredOption("-d, --dest <coord>", "도착지 (경도,위도[,name=이름])")
+    .requiredOption("-d, --dest <location>", "도착지 (주소, 장소명, 또는 경도,위도)")
     .option(
-      "-w, --waypoints <coords>",
-      "경유지 (|로 구분, 최대 5개)"
+      "-w, --waypoints <locations>",
+      "경유지 (|로 구분, 최대 5개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
   const apiKey = getApiKey();
-  const origin = parseCoord(opts.origin as string);
-  const destination = parseCoord(opts.dest as string);
+
+  console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
+  const origin = await resolveLocation(apiKey, opts.origin as string);
+  const destination = await resolveLocation(apiKey, opts.dest as string);
   const waypoints = opts.waypoints
-    ? parseWaypoints(opts.waypoints as string)
+    ? await resolveWaypoints(apiKey, opts.waypoints as string)
     : undefined;
   const routeOpts = extractRouteOptions(opts);
 
@@ -208,19 +184,21 @@ addRouteOptions(
     .alias("wp")
     .description("다중 경유지 길찾기 (최대 30개 경유지, POST)")
     .requiredOption(
-      "-o, --origin <coord>",
-      "출발지 (경도,위도[,name=이름])"
+      "-o, --origin <location>",
+      "출발지 (주소, 장소명, 또는 경도,위도)"
     )
-    .requiredOption("-d, --dest <coord>", "도착지 (경도,위도[,name=이름])")
+    .requiredOption("-d, --dest <location>", "도착지 (주소, 장소명, 또는 경도,위도)")
     .requiredOption(
-      "-w, --waypoints <coords>",
-      "경유지 (|로 구분, 최대 30개)"
+      "-w, --waypoints <locations>",
+      "경유지 (|로 구분, 최대 30개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
   const apiKey = getApiKey();
-  const origin = parseCoord(opts.origin as string);
-  const destination = parseCoord(opts.dest as string);
-  const waypoints = parseWaypoints(opts.waypoints as string);
+
+  console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
+  const origin = await resolveLocation(apiKey, opts.origin as string);
+  const destination = await resolveLocation(apiKey, opts.dest as string);
+  const waypoints = await resolveWaypoints(apiKey, opts.waypoints as string);
 
   if (waypoints.length > 30) {
     console.log(chalk.red("❌ 경유지는 최대 30개까지 지정할 수 있습니다."));
@@ -252,26 +230,21 @@ addRouteOptions(
     .alias("ft")
     .description("미래 운행정보 길찾기 (출발 시간 지정)")
     .requiredOption(
-      "-o, --origin <coord>",
-      "출발지 (경도,위도[,name=이름])"
+      "-o, --origin <location>",
+      "출발지 (주소, 장소명, 또는 경도,위도)"
     )
-    .requiredOption("-d, --dest <coord>", "도착지 (경도,위도[,name=이름])")
+    .requiredOption("-d, --dest <location>", "도착지 (주소, 장소명, 또는 경도,위도)")
     .requiredOption(
       "-t, --time <time>",
       "출발 시간 (YYYYMMDDHHMM 형식, 예: 202603170900)"
     )
     .option(
-      "-w, --waypoints <coords>",
-      "경유지 (|로 구분, 최대 5개)"
+      "-w, --waypoints <locations>",
+      "경유지 (|로 구분, 최대 5개, 주소/장소명 가능)"
     )
 ).action(async (opts) => {
   const apiKey = getApiKey();
-  const origin = parseCoord(opts.origin as string);
-  const destination = parseCoord(opts.dest as string);
   const departureTime = opts.time as string;
-  const waypoints = opts.waypoints
-    ? parseWaypoints(opts.waypoints as string)
-    : undefined;
 
   if (!/^\d{12}$/.test(departureTime)) {
     console.log(
@@ -281,6 +254,13 @@ addRouteOptions(
     );
     process.exit(1);
   }
+
+  console.log(chalk.dim("🔍 위치를 검색하고 있습니다...\n"));
+  const origin = await resolveLocation(apiKey, opts.origin as string);
+  const destination = await resolveLocation(apiKey, opts.dest as string);
+  const waypoints = opts.waypoints
+    ? await resolveWaypoints(apiKey, opts.waypoints as string)
+    : undefined;
 
   const spinner = ora("미래 경로를 검색하고 있습니다...").start();
   try {
